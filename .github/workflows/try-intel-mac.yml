@@ -1,0 +1,54 @@
+name: try intel mac
+# Fork-only: builds the launcher for Intel Macs (x86_64-apple-darwin) on GitHub's native Intel runner, ad hoc signed.
+# Not part of any pull request. The release ships Apple silicon only.
+on:
+  push:
+    branches: [try/intel-mac]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    env:
+      TARGET: x86_64-apple-darwin
+      SUNRISE_LAUNCHER_VERSION: 1.2.0
+      SUNRISE_LAUNCHER_TAG: v1.2.0
+      MACOS_SIGN_IDENTITY: ""
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: rust
+        run: echo "version=$(cat tools/ci/rust-version)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          targets: x86_64-apple-darwin
+      - name: Metal shaders compiled now, or at run time without the Metal toolchain
+        run: |
+          if ! xcrun metal --version > /dev/null 2>&1; then
+            echo "No Metal toolchain on this runner: GPUI compiles its shaders at run time"
+            echo "LAUNCHER_FEATURES=gpui_platform/runtime_shaders" >> "$GITHUB_ENV"
+          fi
+      - run: cargo build --release --locked --target "$TARGET" ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
+      - name: Package (ad hoc signed)
+        run: |
+          set -euo pipefail
+          BIN="target/$TARGET/release/sunrise-launcher"
+          lipo -archs "$BIN"
+          rm -rf out && mkdir -p out
+          python3 -m venv "$RUNNER_TEMP/dmg" && "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
+          DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" packaging/macos/package.sh "$BIN" "$SUNRISE_LAUNCHER_VERSION" out x64
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunrise-launcher-macos-x64
+          path: |
+            out/sunrise-launcher-macos-x64.dmg
+            out/sunrise-launcher-macos-x64.zip
+          retention-days: 7
+          if-no-files-found: error
